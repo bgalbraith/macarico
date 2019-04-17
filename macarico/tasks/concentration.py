@@ -1,41 +1,47 @@
-from __future__ import division, generators, print_function
+from typing import Optional
 
-import random
-
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
 import macarico
 import macarico.util as util
-from macarico.util import Var, Varng
-import numpy as np
+
 
 class Concentration(macarico.Env):
     """
     similar, but simplified from, https://openreview.net/pdf?id=SJxE3jlA-
+
+       # how many unique cards? (n_actions = 2*this)
+         # draw new random "card images" for every episode?
+          # default to 5*n_card_types
     """
     def __init__(self,
-                 n_card_types=4,   # how many unique cards? (n_actions = 2*this)
-                 random_deck_per_episode=True,  # draw new random "card images" for every episode?
-                 max_horizon=None, # default to 5*n_card_types
+                 n_card_types: int = 4,
+                 random_deck_per_episode: bool = True,
+                 max_horizon: Optional[int] = None,
                  ):
-        # a reasonable policy would flip over every card (takes n_card_types steps)
-        # and then would match them all (takes another n_card_types)
+        # a reasonable policy would flip over every card (takes n_card_types
+        # steps) and then would match them all (takes another n_card_types)
         self.n_card_types = n_card_types
         self.random_deck_per_episode = random_deck_per_episode
         self.faces = None
         self.similarity_threshold = 0.4
-        macarico.Env.__init__(self,
-                              2*n_card_types,
-                              max_horizon or (5 * self.n_card_types))
+        self.max_horizon = max_horizon
+        if self.max_horizon is None:
+            self.max_horizon = 5*self.n_card_types
+        super().__init__(2*n_card_types, self.max_horizon)
+
         self.example.costs = []
-        
+
     def _rewind(self):
         if self.faces is None or self.random_deck_per_episode:
             self.draw_new_faces()
-        # card[i] is -1 if the card has already been removed; otherwise it's the face id
+        # card[i] is -1 if the card has already been removed; otherwise it's the
+        # face id
         self.n_remain = self.n_card_types
-        self.card = np.random.permutation(list(range(self.n_card_types)) + list(range(self.n_card_types)) )
+        self.card = np.random.permutation(list(range(self.n_card_types)) +
+                                          list(range(self.n_card_types)))
 
     def draw_new_faces(self):
         a = torch.rand((self.n_card_types, 6))
@@ -45,7 +51,7 @@ class Concentration(macarico.Env):
                 a[n] = torch.rand(6)
         self.faces = a
         
-    def _run_episode(self, policy):
+    def _run_episode(self, policy: macarico.Policy) -> list:
         self.flipped = None
         self.seen = set()
         self.card_seq = []
@@ -87,30 +93,37 @@ class Concentration(macarico.Env):
 
         return self.output()
 
+
 class ConcentrationLoss(macarico.Loss):
-    def __init__(self): super(ConcentrationLoss, self).__init__('cost')
-    def __call__(self, example): return sum(example.costs)
-    
+    def __init__(self):
+        super().__init__('cost')
+
+    def __call__(self, example):
+        return sum(example.costs)
+
+
 class ConcentrationPOFeatures(macarico.DynamicFeatures):
     def __init__(self):
-        # features: the current face up card "image" (if flipped) otherwise 0s, and whether it's an odd or even turn
-        super(ConcentrationPOFeatures, self).__init__(8)
-        self._t = nn.Linear(1,1,bias=False)
+        # features: the current face up card "image" (if flipped) otherwise 0s,
+        # and whether it's an odd or even turn
+        super().__init__(8)
+        self._t = nn.Linear(1, 1, bias=False)
         
-    def _forward(self, state):
+    def _forward(self, state) -> torch.Tensor:
         c = util.zeros(self._t, 2)
         c[state.t % 2] = 1
         if state.flipped is None:
-            return torch.cat([c, util.zeros(self._t, 6)]).view(1,1,-1)
+            return torch.cat([c, util.zeros(self._t, 6)]).view(1, 1, -1)
         else:
-            return torch.cat([c, state.faces[state.card[state.flipped]]]).view(1,1,-1)
+            return torch.cat([c, state.faces[state.card[state.flipped]]]).view(1, 1, -1)
 
     
 class ConcentrationSmartFeatures(macarico.DynamicFeatures):
     def __init__(self, n_card_types, cheat=False):
         # features: 
         #   1. for each of the (2*n_card_types) positions:
-        #        a one-hot of the card id that's there (if it's been seen yet) or 0 otherwise
+        #        a one-hot of the card id that's there (if it's been seen yet)
+        #        or 0 otherwise
         #   2. one-hot of the card id that's currently flipped
         #   3. one-hot for whether this is an even or odd flip
         #   4. CHEATING: one-hot for next card to flip per ConcentrationReference
@@ -118,7 +131,7 @@ class ConcentrationSmartFeatures(macarico.DynamicFeatures):
         self.dim = (2*n_card_types) * n_card_types + n_card_types + 2 + cheat * n_card_types * 2
         self.n_card_types = n_card_types
         super(ConcentrationSmartFeatures, self).__init__(self.dim)
-        self._t = nn.Linear(1,1,bias=False)
+        self._t = nn.Linear(1, 1, bias=False)
 
     def _forward(self, state):
         f = []
@@ -142,8 +155,9 @@ class ConcentrationSmartFeatures(macarico.DynamicFeatures):
             c[ConcentrationReference()(state)] = 1
             f.append(c)
         
-        return torch.cat(f).view(1,1,-1)
-    
+        return torch.cat(f).view(1, 1, -1)
+
+
 class ConcentrationReference(macarico.Reference):
     def __call__(self, state):
         if state.t == 0:
@@ -154,7 +168,8 @@ class ConcentrationReference(macarico.Reference):
             for i in state.seen:
                 if i != state.flipped and c == state.card[i]:
                     return i
-            # haven't seen this card before, which means there's at least one unseen, so flip it
+            # haven't seen this card before, which means there's at least one
+            # unseen, so flip it
             for i in range(len(state.card)):
                 if i not in state.seen:
                     return i
@@ -170,4 +185,3 @@ class ConcentrationReference(macarico.Reference):
                     first_remain = i
             assert first_remain is not None
             return first_remain
-                

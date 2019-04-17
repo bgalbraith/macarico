@@ -1,17 +1,15 @@
-from __future__ import division, generators, print_function
 import sys
+from typing import Optional
+
 import torch
 import torch.nn as nn
 from torch.nn.parameter import Parameter
 from torch.autograd import Variable as Var
 
-if True:
-    # check version
-    vers = torch.__version__.split('.')
-    major = int(vers[0])
-    minor = int(vers[1])
-    assert major == 0 and minor >= 4, \
-        "sorry, macarico requires pytorch version >= 0.4, you have %s" % torch.__version__
+
+if torch.__version__ < '0.4':
+    raise ImportError(f"Maçarico requires pytorch version >= 0.4, you have {torch.__version__}")
+
 
 def check_intentional_override(class_name, fn_name, override_bool_name, obj, *fn_args):
     if not getattr(obj, override_bool_name): # self.OVERRIDE_RUN_EPISODE:
@@ -56,26 +54,26 @@ class Example(object):
         if isinstance(A, list): return ' '.join(map(str, A))
         return str(A)
 
-        
-    
+
 class Env(object):
-    r"""An implementation of an environment; aka a search task or MDP.
+    """
+    An implementation of an environment; aka a search task or MDP.
 
     Args:
-        n_actions: the number of unique actions available to a policy
-                   in this Env (actions are numbered [0, n_actions))
+        n_actions: the number of unique actions available to a policy in this
+        Env (actions are numbered [0, n_actions))
 
-    Must provide a `_run_episode(policy)` function that performs a
-    complete run through this environment, acting according to
-    `policy`.
+    Must provide a `_run_episode(policy)` function that performs a complete run
+    through this environment, acting according to `policy`.
 
-    May optionally provide a `_rewind` function that some learning
-    algorithms (e.g., LOLS) requires.
+    May optionally provide a `_rewind` function that some learning algorithms
+    (e.g., LOLS) require.
     """
     OVERRIDE_RUN_EPISODE = False
     OVERRIDE_REWIND = False
     
-    def __init__(self, n_actions, T, example=None):
+    def __init__(self, n_actions: int, T: int,
+                 example: Optional[Example] = None):
         self.n_actions = n_actions
         self.T = T
         self.example = Example() if example is None else example
@@ -83,50 +81,49 @@ class Env(object):
         #check_intentional_override('Env', '_run_episode', 'OVERRIDE_RUN_EPISODE', self, None)
         #check_intentional_override('Env', '_rewind', 'OVERRIDE_REWIND', self)
     
-    def horizon(self):
+    def horizon(self) -> int:
         return self.T
 
-    def timestep(self):
+    def timestep(self) -> int:
         return len(self._trajectory)
 
-    def output(self):
+    def output(self) -> list:
         return self._trajectory
     
-    def run_episode(self, policy):
-        #print('BEGIN run_episode', type(self), type(policy))
+    def run_episode(self, policy: 'Policy'):
+
         def _policy(state):
-            #print('t', self.timestep(), self.horizon())
-            #if not( self.timestep() < self.horizon()):
-            #    import ipdb; ipdb.set_trace()
             assert self.timestep() < self.horizon()
-            #print(state, type(policy))
             a = policy(state)
             self._trajectory.append(a)
             return a
+
         if hasattr(policy, 'new_example'):
             policy.new_example()
+
         self.rewind(policy)
-        _policy.new_minibatch = policy.new_minibatch if hasattr(policy, 'new_minibatch') else None
-        _policy.new_example = policy.new_example if hasattr(policy, 'new_example') else None
-        _policy.new_run = policy.new_run if hasattr(policy, 'new_run') else None
+
+        _policy.new_minibatch = getattr(policy, 'new_minibatch', None)
+        _policy.new_example = getattr(policy, 'new_example', None)
+        _policy.new_run = getattr(policy, 'new_run', None)
         out = self._run_episode(_policy)
         self.example.Yhat = out if out is not None else self._trajectory
-        #print('END run_episode')
+
         return self.example.Yhat
     
     def input_x(self):
         return self.example.X
 
-    def rewind(self, policy):
+    def rewind(self, policy: 'Policy') -> None:
         self._trajectory = []
-        if hasattr(policy, 'new_run'): # TODO make policy.new_run abstract
+        if hasattr(policy, 'new_run'):  # TODO make policy.new_run abstract
             policy.new_run()
         self._rewind()
         
-    def _run_episode(self, policy):
+    def _run_episode(self, policy: 'Policy'):
         raise NotImplementedError('abstract')
     
-    def _rewind(self):
+    def _rewind(self) -> None:
         raise NotImplementedError('abstract')
 
 class TypeMemory(nn.Module):
@@ -231,12 +228,16 @@ class StaticFeatures(DynamicFeatures):
     def __init__(self, dim):
         DynamicFeatures.__init__(self, dim)
         self._recompute_always = False
-    
+
+
 class Actor(nn.Module):
-    r"""An `Actor` is a module that computes features dynamically as a policy runs."""
+    """
+    An `Actor` is a module that computes features dynamically as a policy runs.
+    """
     OVERRIDE_FORWARD = False
-    def __init__(self, n_actions, dim, attention):
-        nn.Module.__init__(self)
+
+    def __init__(self, n_actions: int, dim: int, attention):
+        super().__init__()
         self._current_env = None
         self._features = None
         self.n_actions = n_actions
@@ -309,12 +310,12 @@ class Actor(nn.Module):
         self._features[t] = ft
         return self._features[t]
 
+
 class Policy(nn.Module):
-    r"""A `Policy` is any function that contains a `forward` function that
-    maps states to actions."""
-    def __init__(self):
-        nn.Module.__init__(self)
-    
+    """
+    A `Policy` is any function that contains a `forward` function that maps
+    states to actions.
+    """
     def forward(self, state):
         raise NotImplementedError('abstract')
 
@@ -328,16 +329,18 @@ class Policy(nn.Module):
     - _features is reset in 0 and 1
     - _batched_features is reset in 0
     """
+    def new_minibatch(self):
+        self._reset_some(0, True)
 
-    def new_minibatch(self): self._reset_some(0, True)
-    def new_example(self): self._reset_some(1, True)
-    def new_run(self): self._reset_some(2, True)
+    def new_example(self):
+        self._reset_some(1, True)
+
+    def new_run(self):
+        self._reset_some(2, True)
     
     def _reset_some(self, reset_type, recurse):
-        #print('_reset_some', reset_type, recurse)
         for module in self.modules():
-            #print('_reset_some', type(module), isinstance(module, Actor), isinstance(module, DynamicFeatures))
-            if isinstance(module, Actor): # always reset dynamic features
+            if isinstance(module, Actor):  # always reset dynamic features
                 module.reset()
             if isinstance(module, DynamicFeatures):
                 if reset_type == 0 or reset_type == 1:
@@ -351,6 +354,7 @@ class Policy(nn.Module):
             #elif module != self and isinstance(module, Policy) and recurse:
             #    module._reset_some(reset_type, False)
 
+
 class StochasticPolicy(Policy):
     def stochastic(self, state):
         # returns a:int, p(a):Var(float)
@@ -358,6 +362,7 @@ class StochasticPolicy(Policy):
 
     def sample(self, state):
         return self.stochastic(state)[0]
+
 
 class CostSensitivePolicy(Policy):
     OVERRIDE_UPDATE = False
@@ -381,7 +386,6 @@ class CostSensitivePolicy(Policy):
                 i = a
         return i
 
-    
     def update(self, state_or_pred_costs, truth, actions=None):
         if isinstance(state_or_pred_costs, Env):
             assert actions is None
@@ -394,15 +398,18 @@ class CostSensitivePolicy(Policy):
         
                 
 class Learner(Policy):
-    r"""A `Learner` behaves identically to a `Policy`, but does "stuff"
-    internally to, eg., compute gradients through pytorch's `backward`
-    procedure. Not all learning algorithms can be implemented this way
-    (e.g., LOLS) but most can (DAgger, reinforce, etc.)."""
+    """
+    A `Learner` behaves identically to a `Policy`, but does "stuff" internally
+    to, eg., compute gradients through pytorch's `backward` procedure. Not all
+    learning algorithms can be implemented this way (e.g., LOLS) but most can
+    (DAgger, reinforce, etc.).
+    """
     def forward(self, state):
         raise NotImplementedError('abstract method not defined.')
 
     def get_objective(self, loss):
         raise NotImplementedError('abstract method not defined.')
+
 
 class NoopLearner(Learner):
     def __init__(self, policy):
@@ -414,29 +421,33 @@ class NoopLearner(Learner):
 
     def get_objective(self, loss):
         return 0.
-    
+
+
 class LearningAlg(nn.Module):
     def __call__(self, env):
         raise NotImplementedError('abstract method not defined.')
-    
+
+
 class Loss(object):
     OVERRIDE_EVALUATE = False
-    def __init__(self, name, corpus_level=False):
+
+    def __init__(self, name: str, corpus_level: bool = False):
         self.name = name
         self.corpus_level = corpus_level
         self.count = 0
         self.total = 0
-        check_intentional_override('Loss', 'evaluate', 'OVERRIDE_EVALUATE', self, None, None)
+        check_intentional_override('Loss', 'evaluate', 'OVERRIDE_EVALUATE',
+                                   self, None, None)
 
-    def evaluate(self, example):
+    def evaluate(self, example: Example) -> float:
         raise NotImplementedError('abstract')
 
     def reset(self):
         self.count = 0.0
         self.total = 0.0
 
-    def __call__(self, example):
-        #TODO put this back assert example.Yhat is not None
+    def __call__(self, example: Example) -> float:
+        # TODO put this back assert example.Yhat is not None
         val = self.evaluate(example)
         if self.corpus_level:
             self.total = val
@@ -446,30 +457,34 @@ class Loss(object):
             self.count += 1.0
         return self.get()
 
-    def get(self):
+    def get(self) -> float:
         return self.total / self.count if self.count > 0 else 0
-    
+
+
 class Reference(object):
-    r"""A `Reference` is a special type of `Policy` that may use the ground
-    truth to provide supervision. In many algorithms the `Reference`
-    is considered to be the oracle policy (e.g., DAgger), but for some
-    it is enough that it is a "good" policy (e.g., LOLS). Some
-    algorithms do not use a `Reference` (e.g., reinforce).
+    """
+    A `Reference` is a special type of `Policy` that may use the ground truth to
+    provide supervision. In many algorithms the `Reference` is considered to be
+    the oracle policy (e.g., DAgger), but for some it is enough that it is a
+    "good" policy (e.g., LOLS). Some algorithms do not use a `Reference` (e.g.,
+    reinforce).
 
-    All `Reference`s must provide a `__call__` function that maps
-    states (represented as an `Env`) to actions (just like `Policy`s).
+    All `Reference`s must provide a `__call__` function that maps states
+    (represented as an `Env`) to actions (just like `Policy`s).
 
-    Some Leaners also assume that the `Reference` can provide a
-    function `set_min_costs_to_go` for efficiency purposes.
-    `set_min_costs_to_go` takes a `state` and a `cost_vector` (of size
-    `n_actions`), and must fill in the cost-to-go for all actions if
-    this reference were followed until the end of time."""
+    Some Leaners also assume that the `Reference` can provide a function
+    `set_min_costs_to_go` for efficiency purposes. `set_min_costs_to_go` takes a
+    `state` and a `cost_vector` (of size `n_actions`), and must fill in the
+    cost-to-go for all actions if this reference were followed until the end of
+    time.
+    """
     def __call__(self, state):
         raise NotImplementedError('abstract')
     
     def set_min_costs_to_go(self, state, cost_vector):
         # optional, but required by some learning algorithms (eg aggrevate)
         raise NotImplementedError('abstract')
+
 
 class Attention(nn.Module):
     r""" It is usually the case that the `Features` one wants to compute

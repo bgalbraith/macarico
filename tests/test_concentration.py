@@ -1,21 +1,21 @@
-import macarico
-from macarico.annealing import NoAnnealing
-from macarico.annealing import EWMA
-from macarico.policies.linear import CSOAAPolicy
-from macarico.lts.dagger import DAgger
-from macarico.tasks.concentration import Concentration, ConcentrationLoss, ConcentrationPOFeatures, ConcentrationSmartFeatures, ConcentrationReference
-from macarico.actors.bow import BOWActor
-from macarico.actors.rnn import RNNActor
-from macarico.features.sequence import AttendAt
-from macarico.lts.reinforce import Reinforce, LinearValueFn, A2C
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
 
-def test(teacher=True, imitation=True):
+import macarico
+from macarico.actors import BOWActor, RNNActor
+from macarico.features.sequence import AttendAt
+from macarico.lts.dagger import DAgger
+from macarico.lts.reinforce import Reinforce
+from macarico.policies.linear import CSOAAPolicy
+from macarico.tasks.concentration import Concentration, ConcentrationLoss, \
+    ConcentrationPOFeatures, ConcentrationSmartFeatures, ConcentrationReference
+
+
+def test(teacher: bool = True, imitation: bool = True):
     n_card_types = 3
     n_epochs = 500000
-    print('Concentration: n_card_types', n_card_types, 'teacher', teacher, 'imitation', imitation)
+    print(f'Concentration: n_card_types {n_card_types}, teacher {teacher}, imitation {imitation}')
     
     env = Concentration(n_card_types=n_card_types, random_deck_per_episode=True)
 
@@ -29,7 +29,7 @@ def test(teacher=True, imitation=True):
         attention = AttendAt(features, position=lambda _: 0)
         actor = BOWActor([attention], env.n_actions)
 
-    else: # student
+    else:  # student
         features = ConcentrationPOFeatures()
         attention = AttendAt(features, position=lambda _: 0)
         actor = RNNActor([attention], env.n_actions, d_hid=50)
@@ -59,7 +59,7 @@ def test(teacher=True, imitation=True):
     best_loss = None
     for epoch in range(1, 1+n_epochs):
         optimizer.zero_grad()
-        output = env.run_episode(learner)
+        env.run_episode(learner)
         loss_val = loss_fn(env.example)
         obj = learner.get_objective(loss_val)
         if not isinstance(obj, float):
@@ -68,23 +68,17 @@ def test(teacher=True, imitation=True):
             obj = obj.item()
 
         losses.append(loss_val)
-        #env.run_episode(policy)
-        #losses.append(loss_fn(env.example))
-            
         objs.append(obj)
-        #losses.append(loss)
-        if epoch%1000 == 0 or epoch==n_epochs:
+        if epoch % 1000 == 0 or epoch == n_epochs:
             loss = np.mean(losses[-500:])
             if best_loss is None or loss < best_loss[0]: best_loss = (loss, epoch)
             print(epoch, 'losses', loss, 'objective', np.mean(objs[-500:]), 'best_loss', best_loss, 'init_losses', np.mean(losses[:1000]), sum(env.example.costs), env.card_seq)
             if loss <= 0.99 * np.mean(ref_losses):
                 break
 
+
 if __name__ == '__main__':
-    for imitation in [True,False]:
-        for teacher in [True,False]:
+    for imitation in [True, False]:
+        for teacher in [True, False]:
             test(teacher, imitation)
-            print()
-            print("=====================")
-            print()
-            
+            print("\n=====================\n")

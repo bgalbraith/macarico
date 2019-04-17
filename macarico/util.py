@@ -1,17 +1,16 @@
-from __future__ import division, generators, print_function
-import sys
-import itertools
 from copy import deepcopy
-import macarico
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import progressbar
-import time
-import os
 import random as py_random
+import os
+import sys
+import time
 
+import numpy as np
+import progressbar
+import torch
+from torch.autograd import Variable
+import torch.nn as nn
+
+import macarico
 from macarico.lts.lols import EpisodeRunner, one_step_deviation
 from macarico.annealing import Averaging
 
@@ -19,8 +18,10 @@ from macarico.annealing import Averaging
 # helpful functions
 Var = torch.autograd.Variable
 
-def Varng(*args, **kwargs):
-    return torch.autograd.Variable(*args, **kwargs, requires_grad=False)
+
+def Varng(*args, **kwargs) -> Variable:
+    return Variable(*args, **kwargs, requires_grad=False)
+
 
 def getnew(param):
     return param.new if hasattr(param, 'new') else \

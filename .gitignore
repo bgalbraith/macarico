@@ -12,3 +12,7 @@ tests/test_saveload.model
 *.bak*
 *.bac
 *~
+
+# JetBrains cruft
+.idea
+*.iml

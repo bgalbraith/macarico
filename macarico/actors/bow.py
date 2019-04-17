@@ -1,14 +1,13 @@
-from __future__ import division, generators, print_function
-
 import torch
-import torch.nn as nn
 
-import macarico
+from macarico import Actor, Env
 import macarico.util as util
-from macarico.util import Var, Varng
+from macarico.util import Varng
 
-class BOWActor(macarico.Actor):
-    def __init__(self, attention, n_actions, act_history_length=1, obs_history_length=0):
+
+class BOWActor(Actor):
+    def __init__(self, attention, n_actions, act_history_length: int = 1,
+                 obs_history_length: int = 0):
         self.att_dim = sum((att.dim for att in attention))
         super().__init__(n_actions,
                          self.att_dim + 
@@ -19,7 +18,7 @@ class BOWActor(macarico.Actor):
         self.obs_history_length = obs_history_length
         self._reset()
 
-    def _forward(self, state, x):
+    def _forward(self, state: Env, x) -> torch.Tensor:
         feats = x[:]
         if self.act_history_length > 0:
             f = util.zeros(self, 1, self.act_history_length * self.n_actions)
@@ -40,4 +39,3 @@ class BOWActor(macarico.Actor):
         for _ in range(self.obs_history_length):
             self.obs_history.append(util.zeros(self, 1, self.att_dim))
         self.obs_history_pos = 0
-        

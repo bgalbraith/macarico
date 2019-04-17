@@ -1,135 +1,180 @@
-from __future__ import division, generators, print_function
-
+from dataclasses import dataclass
 import random
+from typing import Dict, Set
 
-import torch
+from torch.autograd import Variable
 import torch.nn as nn
-import torch.nn.functional as F
-import macarico
+
+
+from macarico import DynamicFeatures, Env, Example, Loss, Policy
 import macarico.util as util
-from macarico.util import Var, Varng
+from macarico.util import Varng
 
-class GridSettings(object):
-    def __init__(self, width, height, start, walls, terminals, per_step_cost, max_steps, gamma, p_step_success):
-        self.width = width
-        self.height = height
-        self.start = start
-        self.walls = walls
-        self.terminal = terminals
-        self.per_step_cost = per_step_cost
-        self.max_steps = max_steps
-        self.gamma = gamma
-        self.p_step_success = p_step_success
-        self.n_actions = 4
 
-def make_default_gridworld(per_step_cost=0.05, max_steps=50, gamma=0.99, p_step_success=0.8, start_random=False):
+@dataclass(frozen=True)
+class GridPosition:
+    x: int
+    y: int
+
+
+@dataclass
+class GridSettings:
+    width: int
+    height: int
+    start: GridPosition
+    walls: Set[GridPosition]
+    terminals: Dict[GridPosition, int]
+    per_step_cost: float
+    max_steps: int
+    gamma: float
+    p_step_success: float
+
+
+def make_default_gridworld(per_step_cost: float = 0.05,
+                           max_steps: int = 50,
+                           gamma: float = 0.99,
+                           p_step_success: float = 0.8,
+                           start_random: bool = False):
+    """
     #    0123
     #   0   +
     #   1 # -
     #   2 #
     #   3
-    start = (0, 3)
+    """
+    start = GridPosition(0, 3)
     if start_random:
-        start = (random.randint(0,3), random.randint(0,3))
-    return GridWorld(GridSettings(4, 4, start, set([(1,1),(1,2)]), {(3,0): 1, (3,1): -1},
-                                  per_step_cost, max_steps, gamma, p_step_success))
-    
-def make_big_gridworld(per_step_cost=0.01, max_steps=200, gamma=0.99, p_step_success=0.9):
-    # from http://cs.stanford.edu/people/karpathy/reinforcejs/
-    return GridWorld(GridSettings(10, 10, (0,9),
-                        set([(1,2), (2,2), (3,2), (4,2), (6,2), (7,2), (8,2),
-                             (4,3), (4,4), (4,5), (4,6), (4,7)]),
-                        {(3,3): -1, (3,7): -1, (5,4): -1, (5,5): 1, (6,5): -1, (6,6): -1, 
-                         (5,7): -1, (6,7): -1, (8,5): -1, (8,6): -1},
-                        per_step_cost, max_steps, gamma, p_step_success))
+        start = GridPosition(random.randint(0, 3), random.randint(0, 3))
+    walls = {GridPosition(1, 1), GridPosition(1, 2)}
+    terminals = {GridPosition(3, 0): 1, GridPosition(3, 1): -1}
+    return GridWorld(GridSettings(4, 4, start, walls, terminals, per_step_cost,
+                                  max_steps, gamma, p_step_success))
 
-class GridWorld(macarico.Env):
-    UP, LEFT, DOWN, RIGHT = 0, 1, 2, 3
-    
-    def __init__(self, example):
-        self.loc = example.start
-        self.discount = 1.
-        self.actions = set([self.UP, self.DOWN, self.LEFT, self.RIGHT])
-        super(GridWorld, self).__init__(len(self.actions), example.max_steps, example)
-        self.example.reward = 0.
+
+def make_big_gridworld(per_step_cost: float = 0.01,
+                       max_steps: int = 200,
+                       gamma: float = 0.99,
+                       p_step_success: float = 0.9):
+    """ from http://cs.stanford.edu/people/karpathy/reinforcejs/ """
+    start = GridPosition(0, 9)
+    walls = {GridPosition(1, 2), GridPosition(2, 2), GridPosition(3, 2),
+             GridPosition(4, 2), GridPosition(6, 2), GridPosition(7, 2),
+             GridPosition(8, 2), GridPosition(4, 3), GridPosition(4, 4),
+             GridPosition(4, 5), GridPosition(4, 6), GridPosition(4, 7)}
+    terminals = {GridPosition(3, 3): -1, GridPosition(3, 7): -1,
+                 GridPosition(5, 4): -1, GridPosition(5, 5): 1,
+                 GridPosition(6, 5): -1, GridPosition(6, 6): -1,
+                 GridPosition(5, 7): -1, GridPosition(6, 7): -1,
+                 GridPosition(8, 5): -1, GridPosition(8, 6): -1}
+    return GridWorld(GridSettings(10, 10, start, walls, terminals,
+                                  per_step_cost, max_steps, gamma,
+                                  p_step_success))
+
+
+class GridWorld(Env):
+    UP = 0
+    LEFT = 1
+    DOWN = 2
+    RIGHT = 3
+
+    def __init__(self, settings: GridSettings):
+        self.settings = settings
+        self.loc = self.settings.start
+        self.discount = 1
+        self.actions = {GridWorld.UP, GridWorld.DOWN, GridWorld.LEFT,
+                        GridWorld.RIGHT}
+        super().__init__(len(self.actions), self.settings.max_steps)
+        self.example.reward = 0
 
     def _rewind(self):
-        self.loc = self.example.start
-        self.example.reward = 0.
-        self.discount = 1.
+        self.loc = self.settings.start
+        self.discount = 1
+        self.example.reward = 0
         
-    def _run_episode(self, policy):
+    def _run_episode(self, policy: Policy) -> str:
         for _ in range(self.horizon()):
             a = policy(self)
             self.step(a)
-            self.example.reward -= self.discount * self.example.per_step_cost
-            if self.loc in self.example.terminal:
-                self.example.reward += self.discount * self.example.terminal[self.loc]
+            self.example.reward -= self.discount * self.settings.per_step_cost
+            if self.loc in self.settings.terminals:
+                self.example.reward += self.discount * \
+                                       self.settings.terminals[self.loc]
                 break
-            self.discount *= self.example.gamma
+            self.discount *= self.settings.gamma
         return self.output()
 
-    def output(self):
+    def output(self) -> str:
         return ''.join(map(self.str_direction, self._trajectory))
 
-    def str_direction(self, a):
-        return "U" if a == self.UP else \
-               "D" if a == self.DOWN else \
-               "L" if a == self.LEFT else \
-               "R" if a == self.RIGHT else \
-               "?"
+    def str_direction(self, a) -> str:
+        return {
+            GridWorld.UP: 'U',
+            GridWorld.DOWN: 'D',
+            GridWorld.LEFT: 'L',
+            GridWorld.RIGHT: 'R'
+        }.get(a, '?')
         
-    def step(self, a):
-        if random.random() > self.example.p_step_success:
+    def step(self, a: int) -> None:
+        if random.random() > self.settings.p_step_success:
             # step failure; pick a neighboring action
             a = (a + 2 * ((random.random() < 0.5) - 1)) % 4
         # take the step
-        new_loc = list(self.loc)
-        if a == self.UP:    new_loc[1] -= 1
-        if a == self.DOWN:  new_loc[1] += 1
-        if a == self.LEFT:  new_loc[0] -= 1
-        if a == self.RIGHT: new_loc[0] += 1
-        new_loc = tuple(new_loc)
+        move = {
+            GridWorld.UP: [0, -1],
+            GridWorld.DOWN: [0, 1],
+            GridWorld.LEFT: [-1, 0],
+            GridWorld.RIGHT: [1, 0]
+        }.get(a, [0, 0])
+        new_loc = GridPosition(self.loc.x + move[0], self.loc.y + move[1])
         if self.is_legal(new_loc):
             self.loc = new_loc
             
-    def is_legal(self, new_loc):
-        return new_loc[0] >= 0 and new_loc[0] < self.example.width and \
-               new_loc[1] >= 0 and new_loc[1] < self.example.height and \
-               new_loc not in self.example.walls
+    def is_legal(self, new_loc: GridPosition) -> bool:
+        return 0 <= new_loc.x < self.settings.width and \
+               0 <= new_loc.y < self.settings.height and \
+               new_loc not in self.settings.walls
 
-class GridLoss(macarico.Loss):
+
+class GridLoss(Loss):
     def __init__(self):
-        super(GridLoss, self).__init__('reward')
+        super().__init__('reward')
 
-    def evaluate(self, example):
+    def evaluate(self, example: Example):
         return -example.reward
-    
-class GlobalGridFeatures(macarico.DynamicFeatures):
-    def __init__(self, width, height):
-        macarico.DynamicFeatures.__init__(self, width*height)
+
+
+class GlobalGridFeatures(DynamicFeatures):
+    def __init__(self, width: int, height: int):
+        super().__init__(width*height)
         self.width = width
         self.height = height
-        self._t = nn.Linear(1,1,bias=False)
+        self._t = nn.Linear(1, 1, bias=False)
 
-    def _forward(self, state):
-        view = util.zeros(self._t.weight, 1,1,self.dim)
-        view[0,0,state.loc[0] * state.example.height + state.loc[1]] = 1
+    def _forward(self, state: GridWorld) -> Variable:
+        view = util.zeros(self._t.weight, 1, 1, self.dim)
+        view[0, 0, state.loc.x * state.settings.height + state.loc.y] = 1
         return Varng(view)
 
-    def __call__(self, state): return self.forward(state)
+    def __call__(self, state: GridWorld):
+        return self.forward(state)
 
-class LocalGridFeatures(macarico.DynamicFeatures):
+
+class LocalGridFeatures(DynamicFeatures):
     def __init__(self):
-        macarico.DynamicFeatures.__init__(self, 4)
-        self._t = nn.Linear(1,1,bias=False)
+        super().__init__(4)
+        self._t = nn.Linear(1, 1, bias=False)
 
-    def _forward(self, state):
-        view = util.zeros(self._t.weight, 1,1,self.dim)
-        if not state.is_legal((state.loc[0]-1, state.loc[1]  )): view[0,0,0] = 1.
-        if not state.is_legal((state.loc[0]+1, state.loc[1]  )): view[0,0,1] = 1.
-        if not state.is_legal((state.loc[0]  , state.loc[1]-1)): view[0,0,2] = 1.
-        if not state.is_legal((state.loc[0]  , state.loc[1]+1)): view[0,0,3] = 1.
+    def _forward(self, state: GridWorld) -> Variable:
+        view = util.zeros(self._t.weight, 1, 1, self.dim)
+        if not state.is_legal(GridPosition(state.loc.x-1, state.loc.y)):
+            view[0, 0, 0] = 1
+        if not state.is_legal(GridPosition(state.loc.x+1, state.loc.y)):
+            view[0, 0, 1] = 1
+        if not state.is_legal(GridPosition(state.loc.x, state.loc.y-1)):
+            view[0, 0, 2] = 1
+        if not state.is_legal(GridPosition(state.loc.x, state.loc.y+1)):
+            view[0, 0, 3] = 1
         return Varng(view)
     
-    def __call__(self, state): return self.forward(state)
+    def __call__(self, state: GridWorld):
+        return self.forward(state)
